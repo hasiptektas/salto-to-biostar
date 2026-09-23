@@ -9,3 +9,5 @@ class BioStarUser:
     start_datetime: str
     expiry_datetime: str
     disabled: bool
+    user_group_id: str = ""
+    user_group_name: str = ""

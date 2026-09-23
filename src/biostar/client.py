@@ -41,16 +41,19 @@ class BioStarClient:
         self._session_id = session_id
         self._http.headers["bs-session-id"] = session_id
 
-    def list_users(self) -> list[BioStarUser]:
+    def list_users(self, group_id: str | None = None) -> list[BioStarUser]:
         if not self._session_id:
             self.login()
-        response = self._http.get("/api/users", params={"limit": 0, "offset": 0})
+        params = {"limit": 0, "offset": 0}
+        if group_id:
+            params["group_id"] = group_id
+        response = self._http.get("/api/users", params=params)
         response.raise_for_status()
         payload = response.json()
         api_response = payload.get("Response", {})
         if str(api_response.get("code", "")) == "10":
             self.login()
-            return self.list_users()
+            return self.list_users(group_id)
         if str(api_response.get("code", "")) != "0":
             raise RuntimeError(api_response.get("message", "Kullanıcı listesi alınamadı."))
 
@@ -63,9 +66,24 @@ class BioStarClient:
                 start_datetime=str(row.get("start_datetime", "")),
                 expiry_datetime=str(row.get("expiry_datetime", "")),
                 disabled=self._as_bool(row.get("disabled", False)),
+                user_group_id=self._object_field(row.get("user_group_id"), "id"),
+                user_group_name=self._object_field(row.get("user_group_id"), "name"),
             )
             for row in rows
         ]
+
+    def move_user_to_group(self, user_id: str, user_group_id: str) -> None:
+        if str(user_id) == "1":
+            raise ValueError("BioStar yönetici kullanıcısının grubu değiştirilemez.")
+        response = self._http.put(
+            f"/api/users/{user_id}",
+            json={"User": {"user_group_id": {"id": str(user_group_id)}}},
+        )
+        self._raise_for_status_with_detail(response, "Kullanıcı grubu değiştirilemedi")
+        payload = response.json() if response.content else {}
+        api_response = payload.get("Response", {})
+        if api_response and str(api_response.get("code", "")) != "0":
+            raise RuntimeError(api_response.get("message", "Kullanıcı grubu değiştirilemedi."))
 
     def get_user_detail(self, user_id: str) -> dict:
         """Tek kullanıcının kartlar dahil detayını salt-okunur getirir."""
@@ -126,6 +144,28 @@ class BioStarClient:
         if api_response and str(api_response.get("code", "")) != "0":
             raise RuntimeError(api_response.get("message", "BioStar kullanıcısı silinemedi."))
 
+    def list_unassigned_cards(self) -> list[dict]:
+        if not self._session_id:
+            self.login()
+        response = self._http.get("/api/cards/unassigned", params={"limit": 0, "offset": 0})
+        self._raise_for_status_with_detail(response, "Sahipsiz kartlar alınamadı")
+        payload = response.json()
+        api_response = payload.get("Response", {})
+        if str(api_response.get("code", "")) != "0":
+            raise RuntimeError(api_response.get("message", "Sahipsiz kartlar alınamadı."))
+        collection = payload.get("CardCollection", {})
+        rows = collection.get("rows", []) if isinstance(collection, dict) else collection
+        return rows if isinstance(rows, list) else []
+
+    def delete_unassigned_card(self, internal_card_id: str) -> None:
+        response = self._http.delete("/api/cards", params={"id": str(internal_card_id)})
+        self._raise_for_status_with_detail(response, "Sahipsiz kart silinemedi")
+        if response.content:
+            payload = response.json()
+            api_response = payload.get("Response", {})
+            if api_response and str(api_response.get("code", "")) != "0":
+                raise RuntimeError(api_response.get("message", "Sahipsiz kart silinemedi."))
+
     def get_wiegand_format(self, format_id: str) -> dict:
         """Bir Wiegand formatının tanımını salt-okunur getirir."""
         if not self._session_id:
@@ -165,6 +205,23 @@ class BioStarClient:
         if str(api_response.get("code", "")) != "0":
             raise RuntimeError(api_response.get("message", "Erişim grupları alınamadı."))
         collection = payload.get("AccessGroupCollection", {})
+        rows = collection.get("rows", []) if isinstance(collection, dict) else collection
+        return rows if isinstance(rows, list) else []
+
+    def list_user_groups(self) -> list[dict]:
+        """BioStar kullanıcı gruplarını değişiklik yapmadan getirir."""
+        if not self._session_id:
+            self.login()
+        response = self._http.get("/api/user_groups", params={"limit": 0, "offset": 0})
+        response.raise_for_status()
+        payload = response.json()
+        api_response = payload.get("Response", {})
+        if str(api_response.get("code", "")) == "10":
+            self.login()
+            return self.list_user_groups()
+        if str(api_response.get("code", "")) != "0":
+            raise RuntimeError(api_response.get("message", "Kullanıcı grupları alınamadı."))
+        collection = payload.get("UserGroupCollection", {})
         rows = collection.get("rows", []) if isinstance(collection, dict) else collection
         return rows if isinstance(rows, list) else []
 
@@ -213,6 +270,10 @@ class BioStarClient:
     @staticmethod
     def _as_bool(value: object) -> bool:
         return value is True or str(value).lower() in {"1", "true", "yes"}
+
+    @staticmethod
+    def _object_field(value: object, field: str) -> str:
+        return str(value.get(field, "")) if isinstance(value, dict) else ""
 
     def update_user_stay(
         self,
@@ -285,23 +346,22 @@ class BioStarClient:
         activation: datetime,
         expiration: datetime,
         access_group_id: str,
+        user_group_id: str,
     ) -> tuple[str, str]:
         """Oda adını eşleştirir; yeni kullanıcı ID'sini BioStar'dan alır."""
         matched_user = self.find_user_by_name(room_reference)
+        if not user_group_id:
+            raise ValueError("BioStar kullanıcı grubu seçilmemiş.")
         user_id = matched_user.user_id if matched_user else self.get_next_user_id()
         existing = self.get_user_detail(user_id) if matched_user else None
-        current_cards: list[str] = []
-        if existing:
-            cards_value = existing.get("cards", [])
-            cards = cards_value.get("rows", []) if isinstance(cards_value, dict) else cards_value
-            current_cards = [str(card.get("id")) for card in cards if card.get("id")]
-        all_card_ids = list(dict.fromkeys(current_cards + [str(value) for value in internal_card_ids]))
+        all_card_ids = list(dict.fromkeys(str(value) for value in internal_card_ids))
         fields = {
             "start_datetime": self._to_biostar_utc(activation),
             "expiry_datetime": self._to_biostar_utc(expiration),
             "disabled": False,
             "cards": [{"id": value} for value in all_card_ids],
             "access_groups": [{"id": str(access_group_id)}],
+            "user_group_id": {"id": str(user_group_id)},
         }
         if existing:
             response = self._http.put(f"/api/users/{user_id}", json={"User": fields})
@@ -310,7 +370,6 @@ class BioStarClient:
             fields.update({
                 "user_id": user_id,
                 "name": room_reference,
-                "user_group_id": {"id": "1"},
             })
             response = self._http.post("/api/users", json={"User": fields})
             action = "oluşturulamadı"

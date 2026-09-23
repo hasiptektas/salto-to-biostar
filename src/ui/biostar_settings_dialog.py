@@ -32,6 +32,11 @@ class BioStarSettingsDialog(QDialog):
             current.access_group_name or "Bağlantıda erişim grupları yüklenecek",
             current.access_group_id,
         )
+        self.user_group_input = QComboBox()
+        self.user_group_input.addItem(
+            current.user_group_name or "Bağlantıda kullanıcı grupları yüklenecek",
+            current.user_group_id,
+        )
         self.result_label = QLabel("Parolayı girip bağlantıyı kaydedin.")
 
         form = QFormLayout()
@@ -39,6 +44,7 @@ class BioStarSettingsDialog(QDialog):
         form.addRow("Kullanıcı adı:", self.username_input)
         form.addRow("Parola:", self.password_input)
         form.addRow("Güvenlik:", self.verify_certificate)
+        form.addRow("Kullanıcı grubu:", self.user_group_input)
         form.addRow("Erişim grubu:", self.access_group_input)
 
         cancel = QPushButton("İptal")
@@ -67,6 +73,11 @@ class BioStarSettingsDialog(QDialog):
                 self.access_group_input.currentText()
                 if self.access_group_input.currentData() else ""
             ),
+            user_group_id=str(self.user_group_input.currentData() or ""),
+            user_group_name=(
+                self.user_group_input.currentText()
+                if self.user_group_input.currentData() else ""
+            ),
         )
         password = self.password_input.text()
         if not settings.base_url or not settings.username or not password:
@@ -79,9 +90,13 @@ class BioStarSettingsDialog(QDialog):
                 client = BioStarClient(settings, password)
                 client.login()
                 groups = client.list_access_groups()
+                user_groups = client.list_user_groups()
                 if not groups:
                     raise RuntimeError("BioStar'da seçilebilecek erişim grubu bulunamadı.")
+                if not user_groups:
+                    raise RuntimeError("BioStar'da seçilebilecek kullanıcı grubu bulunamadı.")
                 previous_id = settings.access_group_id
+                previous_user_group_id = settings.user_group_id
                 self.access_group_input.clear()
                 for group in groups:
                     group_id = str(group.get("id", ""))
@@ -90,9 +105,19 @@ class BioStarSettingsDialog(QDialog):
                 selected_index = self.access_group_input.findData(previous_id)
                 if selected_index >= 0:
                     self.access_group_input.setCurrentIndex(selected_index)
+                self.user_group_input.clear()
+                for group in user_groups:
+                    group_id = str(group.get("id", ""))
+                    if group_id:
+                        self.user_group_input.addItem(str(group.get("name", group_id)), group_id)
+                selected_user_group_index = self.user_group_input.findData(previous_user_group_id)
+                if selected_user_group_index >= 0:
+                    self.user_group_input.setCurrentIndex(selected_user_group_index)
                 self._verified_client = client
                 self._groups_loaded = True
-                self.result_label.setText("Erişim grubunu seçip 'Seçimi kaydet' düğmesine basın.")
+                self.result_label.setText(
+                    "Kullanıcı ve erişim grubunu seçip 'Seçimi kaydet' düğmesine basın."
+                )
                 self.connect_button.setText("Seçimi kaydet")
                 return
             settings = BioStarConnectionSettings(
@@ -101,6 +126,8 @@ class BioStarSettingsDialog(QDialog):
                 verify_certificate=settings.verify_certificate,
                 access_group_id=str(self.access_group_input.currentData() or ""),
                 access_group_name=self.access_group_input.currentText(),
+                user_group_id=str(self.user_group_input.currentData() or ""),
+                user_group_name=self.user_group_input.currentText(),
             )
             self._store.save(settings, password)
             self.connection_verified.emit(self._verified_client)

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import json
 
 import keyring
 from PySide6.QtCore import QSettings
@@ -11,6 +12,8 @@ class BioStarConnectionSettings:
     verify_certificate: bool = False
     access_group_id: str = ""
     access_group_name: str = ""
+    user_group_id: str = ""
+    user_group_name: str = ""
 
     def normalized_url(self) -> str:
         return self.base_url.strip().rstrip("/")
@@ -33,6 +36,8 @@ class BioStarSettingsStore:
             ).lower() in {"1", "true", "yes"},
             access_group_id=str(self._settings.value("access_group_id", "")),
             access_group_name=str(self._settings.value("access_group_name", "")),
+            user_group_id=str(self._settings.value("user_group_id", "")),
+            user_group_name=str(self._settings.value("user_group_name", "")),
         )
         self._settings.endGroup()
         return value
@@ -47,7 +52,21 @@ class BioStarSettingsStore:
         self._settings.setValue("verify_certificate", value.verify_certificate)
         self._settings.setValue("access_group_id", value.access_group_id)
         self._settings.setValue("access_group_name", value.access_group_name)
+        self._settings.setValue("user_group_id", value.user_group_id)
+        self._settings.setValue("user_group_name", value.user_group_name)
         self._settings.endGroup()
         self._settings.sync()
         if password:
             keyring.set_password(self.SERVICE, self.ACCOUNT, password)
+
+    def load_missing_counts(self) -> dict[str, int]:
+        raw = str(self._settings.value("automation/missing_counts", "{}"))
+        try:
+            value = json.loads(raw)
+            return {str(key): int(count) for key, count in value.items()}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+
+    def save_missing_counts(self, value: dict[str, int]) -> None:
+        self._settings.setValue("automation/missing_counts", json.dumps(value))
+        self._settings.sync()
